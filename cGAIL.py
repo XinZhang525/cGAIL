@@ -23,7 +23,10 @@ import random
 import scipy.optimize
 
 import statistics
+from a2c_ppo_acktr.arguments import get_args
 
+
+args = get_args()
 tensor = torch.tensor
 DoubleTensor = torch.DoubleTensor
 FloatTensor = torch.FloatTensor
@@ -32,23 +35,30 @@ ByteTensor = torch.ByteTensor
 ones = torch.ones
 zeros = torch.zeros
 
+device = torch.device("cuda:0" if args.cuda else "cpu")
+STATE_DIM = 25
+ACTION_DIM = 10
+USER_DIM = 24
 
 train_file_name = os.path.join(
         args.experts_dir, "expert_traj.pkl")
 test_file_name = os.path.join(
     args.experts_dir, "test_traj.pkl")
+ground_file_name = os.path.join(
+    args.experts_dir, "exp_loc.pkl")
 
 expert_st, expert_ur, expert_ac = pickle.load(open(train_file_name, 'rb'))
 train_load = data_utils.TensorDataset(torch.from_numpy(np.asarray(expert_st)), 
                                       torch.from_numpy(np.asarray(expert_ur)), 
                                       torch.from_numpy(np.asarray(expert_ac))) 
-gail_train_loader = torch.utils.data.DataLoader(train_load, batch_size=args.gail_batch_size, shuffle=True)
+train_loader = torch.utils.data.DataLoader(train_load, batch_size=args.gail_batch_size, shuffle=True)
 
 test_st, test_ur, test_ac = pickle.load(open(test_file_name, 'rb'))
 test_load = data_utils.TensorDataset(torch.from_numpy(np.asarray(test_st)), 
                                       torch.from_numpy(np.asarray(test_ur)), 
                                       torch.from_numpy(np.asarray(test_ac))) 
 test_loader = torch.utils.data.DataLoader(test_load, batch_size=args.gail_batch_size, shuffle=True)
+exp_loc = pickle.load(open(ground_file_name, 'rb'))
 
 classes = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
@@ -56,9 +66,9 @@ class Net(nn.Module):
     def __init__(self, obs_shape, action_space, cond_space):
         super(Net, self).__init__()
         self.prefc1 = nn.Linear(cond_space, obs_shape)
-        self.conv1 = nn.Conv2d(6, 20, 3, padding=1) 
+        self.conv1 = nn.Conv2d(6, 20, 2) 
         self.pool = nn.MaxPool2d(2, 1)
-        self.conv2 = nn.Conv2d(20, 30, 3)
+        self.conv2 = nn.Conv2d(20, 30, 2)
         self.fc1 = nn.Linear(30, 120) 
         self.bn = nn.BatchNorm1d(120)
         self.fc2 = nn.Linear(120, 84) 
@@ -90,10 +100,6 @@ class Dis(nn.Module):
         super(Dis, self).__init__()
 
         self.device = device
-
-        self.returns = None
-        self.ret_rms = RunningMeanStd(shape=())
-        
         self.label_embedding = nn.Embedding(10, 10)
         self.prefc1 = nn.Linear(action_dim, 25)
         
@@ -149,8 +155,8 @@ def cross_entropy(target, ground_truth): # actually the KL-divergence
         
     return ce/(len(target)), ces
 
-net = Net()
-dis = Dis()
+net = Net(STATE_DIM, ACTION_DIM, USER_DIM)
+dis = Dis(STATE_DIM, ACTION_DIM, USER_DIM, device, lr=args.D_lr)
 
 lr = 2e-4
 optimizer = torch.optim.Adam(net.parameters(), lr=lr)
@@ -163,9 +169,9 @@ temp_dis = 0
 for epoch in range(2000):
     running_loss = 0.
     dis_loss = 0.
-    for i, data in enumerate(trainloader, 0):
+    for i, data in enumerate(train_loader, 0):
         '''expert inputs , user info, and labels(actions)'''
-        inputs, user, user_ID, labels = data
+        inputs, user, labels = data
         inputs = inputs.float()
         user = user.float()
         labels = labels.long()
@@ -191,14 +197,12 @@ for epoch in range(2000):
             running_loss = 0.        
             if epoch % 5 == 4:
                 out_loc = {}
-                for i, data in enumerate(testloader, 0):
-                    inputs, user, user_ID, labels = data
+                for i, data in enumerate(test_loader, 0):
+                    inputs, user, labels = data
                     inputs = inputs.float()
                     user = user.float()
-                    user_ID = user_ID.float()
                     labels = labels.long()
-                    output = net.select_action(inputs, user, user_ID).tolist()
-
+                    output = net.select_action(inputs, user).tolist()
                     for i in range(inputs.size(0)):
                         x = int(inputs[i][0].item())
                         y = int(inputs[i][1].item())
@@ -221,5 +225,5 @@ for epoch in range(2000):
                         target.append(o1)
                         ground.append(o2)
 
-                k, c, kls = cross_entropy(target, ground)
-                print(k, c)
+                k, kls = cross_entropy(target, ground)
+                print(k)
