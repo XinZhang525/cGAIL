@@ -66,9 +66,9 @@ class Net(nn.Module):
     def __init__(self, obs_shape, action_space, cond_space):
         super(Net, self).__init__()
         self.prefc1 = nn.Linear(cond_space, obs_shape)
-        self.conv1 = nn.Conv2d(6, 20, 2) 
+        self.conv1 = nn.Conv2d(6, 20, 3, padding=1) 
         self.pool = nn.MaxPool2d(2, 1)
-        self.conv2 = nn.Conv2d(20, 30, 2)
+        self.conv2 = nn.Conv2d(20, 30, 3)
         self.fc1 = nn.Linear(30, 120) 
         self.bn = nn.BatchNorm1d(120)
         self.fc2 = nn.Linear(120, 84) 
