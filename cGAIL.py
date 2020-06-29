@@ -101,7 +101,7 @@ class Dis(nn.Module):
 
         self.device = device
         self.label_embedding = nn.Embedding(10, 10)
-        self.prefc1 = nn.Linear(action_dim, 25)
+        self.prefc1 = nn.Linear(user_dim, 25)
         
         self.linear = nn.Linear(state_dim*6+action_dim, 81)
         self.relu = nn.LeakyReLU(0.2, inplace=True)
@@ -115,7 +115,7 @@ class Dis(nn.Module):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         
     def forward(self, state, user, label):
-        label = label.view(label.size(0))
+        label = label.view(label.size(0)).long()
         user = self.prefc1(user).view(user.size(0), -1)
         x = state.view(state.size(0), -1)
         x = torch.cat((state, user), dim=1).view(state.size(0), -1)
