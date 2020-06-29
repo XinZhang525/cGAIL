@@ -17,7 +17,7 @@ def get_args():
         help='gail batch size (default: 128)')
     parser.add_argument(
         '--experts-dir',
-        default='/home/xzhang17/urban_computing/cGAIL/expert_traj/',
+        default='./expert_traj/',
         help='directory that contains expert demonstrations')
     parser.add_argument(
         '--gail-epoch', type=int, default=5, help='gail epochs (default: 5)')
