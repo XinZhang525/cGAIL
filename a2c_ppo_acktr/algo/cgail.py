@@ -19,21 +19,21 @@ class Discriminator(nn.Module):
         self.ret_rms = RunningMeanStd(shape=())
         
         self.label_embedding = nn.Embedding(10, 10)
-        self.prefc1 = nn.Linear(action_dim, 25)
+        self.prefc1 = nn.Linear(user_dim, 25)
         
         self.linear = nn.Linear(state_dim*6+action_dim, 81)
         self.relu = nn.LeakyReLU(0.2, inplace=True)
-        self.conv1 = nn.Conv2d(1, 2, 2)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(2, 20, 2)
+        self.conv1 = nn.Conv2d(1, 2, 3)
+        self.pool = nn.MaxPool2d(2, 1)
+        self.conv2 = nn.Conv2d(2, 20, 3)
         self.conv2_bn = nn.BatchNorm2d(20)
-        self.fc1 = nn.Linear(20, 120)
+        self.fc1 = nn.Linear(180, 120)
         self.fc2 = nn.Linear(120, 84)
         self.fc3 = nn.Linear(84, 1) 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         
     def forward(self, state, user, label):
-        label = label.view(label.size(0))
+        label = label.view(label.size(0)).long()
         user = self.prefc1(user).view(user.size(0), -1)
         x = state.view(state.size(0), -1)
         x = torch.cat((state, user), dim=1).view(state.size(0), -1)
@@ -42,7 +42,7 @@ class Discriminator(nn.Module):
         x = x.view(x.size(0), 1, 9, 9)
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2_bn(self.conv2(x))))
-        x = x.view(-1, 20)
+        x = x.view(-1, 180)
         x = F.leaky_relu(self.fc1(x), 0.2)
         x = F.leaky_relu(self.fc2(x), 0.2)
         x = self.fc3(x)
@@ -62,9 +62,9 @@ class Discriminator(nn.Module):
             policy_d = self.forward(policy_state, policy_user, policy_action.float())
 
             expert_state, expert_user, expert_action = expert_batch
-            expert_state = torch.FloatTensor(expert_state).to(self.device)
-            expert_user = expert_user.view((expert_user.shape[0], -1)).to(self.device)
-            expert_action = expert_action.view((expert_state.shape[0], -1)).to(self.device)
+            expert_state = expert_state.float().to(self.device)
+            expert_user = expert_user.view((expert_user.shape[0], -1)).float().to(self.device)
+            expert_action = expert_action.view((expert_state.shape[0], -1)).float().to(self.device)
             expert_d = self.forward(expert_state, expert_user, expert_action)
 
             expert_loss = F.binary_cross_entropy_with_logits(
@@ -82,7 +82,7 @@ class Discriminator(nn.Module):
             self.optimizer.step()
         return loss / n
 
-    def predict_reward(self, state, user, action, gamma, masks, update_rms=True):
+    def predict_reward(self, state, user, action, gamma, update_rms=True):
         with torch.no_grad():
             self.eval()
             d = self.forward(state, user, action.float())
@@ -92,7 +92,7 @@ class Discriminator(nn.Module):
                 self.returns = reward.clone()
 
             if update_rms:
-                self.returns = self.returns * masks * gamma + reward
+                self.returns = self.returns * gamma + reward
                 self.ret_rms.update(self.returns.cpu().numpy())
 
             return reward / np.sqrt(self.ret_rms.var[0] + 1e-8)
