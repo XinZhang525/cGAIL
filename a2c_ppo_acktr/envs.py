@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import torch
+import random
+import pickle
 
 from baselines import bench
 from baselines.common.atari_wrappers import make_atari, wrap_deepmind
@@ -11,71 +13,47 @@ from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.common.vec_env.vec_normalize import \
     VecNormalize as VecNormalize_
 
+exp_dict = pickle.load(open('/home/xzhang17/urban_computing/cGAIL/expert_traj/exp_dict.pkl', 'rb'))
 
-def make_env(seed, rank, allow_early_resets):
-    def _thunk():
-        env.seed(seed + rank)
-
-        # If the input has shape (W,H,3), wrap for PyTorch convolutions
-        obs_shape = env.observation_space.shape
-        if len(obs_shape) == 3 and obs_shape[2] in [1, 3]:
-            env = TransposeImage(env, op=[2, 0, 1])
-
-        return env
-
-    return _thunk
-
-
-def make_vec_envs(seed, num_processes, gamma, device, allow_early_resets):
-    envs = [make_env(seed, i, allow_early_resets) for i in range(num_processes)]
-
-    if len(envs) > 1:
-        envs = SubprocVecEnv(envs, context='fork')
-    else:
-        envs = DummyVecEnv(envs)
-
-    if len(envs.observation_space.shape) == 1:
-        if gamma is None:
-            envs = VecNormalize(envs, ret=False)
-        else:
-            envs = VecNormalize(envs, gamma=gamma)
-
-    envs = VecPyTorch(envs, device)
-
-    if num_frame_stack is not None:
-        envs = VecPyTorchFrameStack(envs, num_frame_stack, device)
-    elif len(envs.observation_space.shape) == 3:
-        envs = VecPyTorchFrameStack(envs, 4, device)
-
-    return envs
-
-
-
-class VecPyTorch(VecEnvWrapper):
-    def __init__(self, venv, device):
-        """Return only every `skip`-th frame"""
-        super(VecPyTorch, self).__init__(venv)
-        self.device = device
-        # TODO: Fix data types
-
+class Env():
+    def __init__(self, states, users):
+        self.states = states
+        self.users = users
+        self.user = None
+        self.action_space = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    def seed(self, seed=None):
+        return np.random.seed(seed)
     def reset(self):
-        obs = self.venv.reset()
-        obs = torch.from_numpy(obs).float().to(self.device)
-        return obs
+        state, user = random_sample_inputs(self.states, self.users, 1)
+        self.user = user
+        return state, user
+    def step(self, state, action):
+        return decide_next_state(action, state, 1)
 
-    def step_async(self, actions):
-        if isinstance(actions, torch.LongTensor):
-            # Squeeze the dimension for discrete actions
-            actions = actions.squeeze(1)
-        actions = actions.cpu().numpy()
-        self.venv.step_async(actions)
+class Envs():
+    def __init__(self, envs):
+        self.envs = envs
+    def reset(self):
+        states, users = [], []
+        for i in range(len(self.envs)):
+            stemp, utemp = self.envs[i].reset()
+            states.append(stemp)
+            users.append(utemp)
+        return torch.stack(states), torch.stack(users)
+    def step(self, state, action):
+        return decide_next_state(action, state, 1)
+    
+def make_env(states, users, seed, rank):
+#     def _thunk():
+    env = Env(states, users)
+    env.seed(seed + rank)
+    return env
+#     return _thunk
 
-    def step_wait(self):
-        obs, reward, done, info = self.venv.step_wait()
-        obs = torch.from_numpy(obs).float().to(self.device)
-        reward = torch.from_numpy(reward).unsqueeze(dim=1).float()
-        return obs, reward, done, info
 
+def make_vec_envs(states, users, seed, num_processes, gamma, device):
+    envs_temp = [make_env(states, users, seed, i) for i in range(num_processes)]
+    return Envs(envs_temp)
 
 class VecNormalize(VecNormalize_):
     def __init__(self, *args, **kwargs):
@@ -98,82 +76,40 @@ class VecNormalize(VecNormalize_):
 
     def eval(self):
         self.training = False
-
-
-# Derived from
-# https://github.com/openai/baselines/blob/master/baselines/common/vec_env/vec_frame_stack.py
-class VecPyTorchFrameStack(VecEnvWrapper):
-    def __init__(self, venv, nstack, device=None):
-        self.venv = venv
-        self.nstack = nstack
-
-        wos = venv.observation_space  # wrapped ob space
-        self.shape_dim0 = wos.shape[0]
-
-        low = np.repeat(wos.low, self.nstack, axis=0)
-        high = np.repeat(wos.high, self.nstack, axis=0)
-
-        if device is None:
-            device = torch.device('cpu')
-        self.stacked_obs = torch.zeros((venv.num_envs, ) +
-                                       low.shape).to(device)
-
-        observation_space = gym.spaces.Box(
-            low=low, high=high, dtype=venv.observation_space.dtype)
-        VecEnvWrapper.__init__(self, venv, observation_space=observation_space)
-
-    def step_wait(self):
-        obs, rews, news, infos = self.venv.step_wait()
-        self.stacked_obs[:, :-self.shape_dim0] = \
-            self.stacked_obs[:, self.shape_dim0:].clone()
-        for (i, new) in enumerate(news):
-            if new:
-                self.stacked_obs[i] = 0
-        self.stacked_obs[:, -self.shape_dim0:] = obs
-        return self.stacked_obs, rews, news, infos
-
-    def reset(self):
-        obs = self.venv.reset()
-        if torch.backends.cudnn.deterministic:
-            self.stacked_obs = torch.zeros(self.stacked_obs.shape)
-        else:
-            self.stacked_obs.zero_()
-        self.stacked_obs[:, -self.shape_dim0:] = obs
-        return self.stacked_obs
-
-    def close(self):
-        self.venv.close()
         
 def decide_next_state(dirc, current_state, timestep=1):
+    day = current_state[3]
     if current_state[2] < 289:
         new_time = current_state[2] + timestep
     else:
         new_time = (current_state[2]+timestep)%288
+        day += 1
+    day = day%7
     
     if dirc == 0:
-        new_step = [current_state[0], current_state[1]+1, new_time]
-        return new_step
+        new_step = [current_state[0], current_state[1]+1, new_time, day]
     if dirc == 1: 
-        new_step = [current_state[0]+1, current_state[1]+1, new_time] 
-        return new_step
+        new_step = [current_state[0]+1, current_state[1]+1, new_time, day] 
     if dirc == 2:
-        new_step = [current_state[0]+1, current_state[1], new_time]
-        return new_step
+        new_step = [current_state[0]+1, current_state[1], new_time, day]
     if dirc == 3: 
-        new_step = [current_state[0]+1, current_state[1]-1, new_time]
-        return new_step
+        new_step = [current_state[0]+1, current_state[1]-1, new_time, day]
     if dirc == 4:
-        new_step = [current_state[0], current_state[1]-1, new_time]
-        return new_step
+        new_step = [current_state[0], current_state[1]-1, new_time, day]
     if dirc == 5: 
-        new_step = [current_state[0]-1, current_state[1]-1, new_time]
-        return new_step
+        new_step = [current_state[0]-1, current_state[1]-1, new_time, day]
     if dirc == 6:
-        new_step = [current_state[0]-1, current_state[1], new_time]
-        return new_step
+        new_step = [current_state[0]-1, current_state[1], new_time, day]
     if dirc == 7:
-        new_step = [current_state[0]-1, current_state[1]+1, new_time]
-        return new_step
+        new_step = [current_state[0]-1, current_state[1]+1, new_time, day]
     if dirc == 8:
-        new_step = [current_state[0], current_state[1], new_time]
-        return new_step
+        new_step = [current_state[0], current_state[1], new_time, day]
+    if tuple(new_step) in exp_dict:
+        return torch.from_numpy(np.asarray(exp_dict[tuple(new_step)]))
+    else:
+        return None
+    
+def random_sample_inputs(states, users, length):
+    os = random.sample(states, length)
+    ou = random.sample(users, length)
+    return torch.from_numpy(np.asarray(os)), torch.from_numpy(np.asarray(ou))
