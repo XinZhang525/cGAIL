@@ -13,7 +13,7 @@ from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.common.vec_env.vec_normalize import \
     VecNormalize as VecNormalize_
 
-exp_dict = pickle.load(open('/home/xzhang17/urban_computing/cGAIL/expert_traj/exp_dict.pkl', 'rb'))
+exp_dict = pickle.load(open('./expert_traj/exp_dict.pkl', 'rb'))
 
 class Env():
     def __init__(self, states, users):
